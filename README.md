@@ -10,6 +10,7 @@ Current goals:
 - run the existing workflow from a browser
 - inspect normalized JSON output
 - show key decision/gating data clearly
+- browse recent run history and artifacts
 - avoid rewriting the core engine
 
 ## Expected local setup
@@ -24,6 +25,12 @@ This UI expects the original project checkout to exist locally at one of these p
 python3.12 -m venv .venv
 source .venv/bin/activate
 pip install -r requirements.txt
+streamlit run streamlit_app.py
+```
+
+Compatibility alias:
+
+```bash
 streamlit run app.py
 ```
 
@@ -38,13 +45,22 @@ export AUGMENT_CORE_PATH=/absolute/path/to/augment-options-research-v2/project
 - Run `scripts/mc_command.py --json`
 - Toggle `--skip-live`
 - Adjust attempts / retry delay / freshness SLA
-- View summary metrics
+- Load the latest saved state or a sample payload
+- View summary metrics and trade-readiness gates
 - Inspect failures, candidates, provenance, and raw JSON
+- Browse `snapshots/mc_runs.jsonl` history
+- Chart recent EV / CVaR / spot metrics
+- Browse `kb/experiments/options-mc-*.json` artifacts
+
+## App entrypoints
+
+- `streamlit_app.py` — main Streamlit app with all relevant code
+- `app.py` — compatibility shim that imports `streamlit_app.py`
 
 ## Next likely upgrades
 
-- run history viewer
-- charts for EV / CVaR / decision changes over time
-- artifact browser for `kb/experiments`
 - editable risk settings from the UI
+- compare two artifacts side-by-side
+- surface more of the gate logic in human language
+- export a lightweight HTML/PDF report
 - optional FastAPI backend if this grows beyond a local dashboard
