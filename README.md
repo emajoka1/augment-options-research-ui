@@ -1,23 +1,16 @@
 # augment-options-research-ui
 
-Thin Streamlit dashboard for the Options Research Tool.
+Self-contained Streamlit dashboard for the Options Research Tool.
 
-## What this is
+## What changed
 
-A lightweight local UI that sits on top of the existing research pipeline and Monte Carlo scripts.
+The relevant workflow engine code is now bundled directly into this repo under `vendor_core/`.
 
-Current goals:
-- run the existing workflow from a browser
-- inspect normalized JSON output
-- show key decision/gating data clearly
-- browse recent run history and artifacts
-- avoid rewriting the core engine
-
-## Expected local setup
-
-This UI expects the original project checkout to exist locally at one of these paths:
-- `../augment-options-research-v2/project` (default)
-- or a custom path via `AUGMENT_CORE_PATH`
+That means:
+- no sibling repo dependency
+- no `AUGMENT_CORE_PATH` setup
+- one repo to clone
+- one app to run
 
 ## Run
 
@@ -34,17 +27,22 @@ Compatibility alias:
 streamlit run app.py
 ```
 
-## Optional env vars
+## App entrypoints
 
-```bash
-export AUGMENT_CORE_PATH=/absolute/path/to/augment-options-research-v2/project
-```
+- `streamlit_app.py` — main Streamlit app with all relevant code
+- `app.py` — compatibility shim that imports `streamlit_app.py`
 
-If you do not set it, the app now tries several common locations automatically and also lets you override the path directly in the sidebar.
+## Repo layout
+
+- `streamlit_app.py` — Streamlit UI
+- `vendor_core/src/` — bundled Python core package code
+- `vendor_core/scripts/` — bundled workflow scripts
+- `vendor_core/snapshots/` — generated runtime state/history (created as you run)
+- `vendor_core/kb/experiments/` — generated MC artifacts (created as you run)
 
 ## Current features
 
-- Run `scripts/mc_command.py --json`
+- Run bundled `mc_command.py --json`
 - Toggle `--skip-live`
 - Adjust attempts / retry delay / freshness SLA
 - Override key risk/feed env settings from the sidebar
@@ -57,19 +55,12 @@ If you do not set it, the app now tries several common locations automatically a
 - Load the latest saved state or a sample payload
 - View summary metrics and trade-readiness gates
 - Inspect failures, candidates, provenance, and raw JSON
-- Browse `snapshots/mc_runs.jsonl` history
+- Browse `vendor_core/snapshots/mc_runs.jsonl` history
 - Chart recent EV / CVaR / spot metrics
-- Browse `kb/experiments/options-mc-*.json` artifacts
+- Browse `vendor_core/kb/experiments/options-mc-*.json` artifacts
 
-## App entrypoints
+## Notes
 
-- `streamlit_app.py` — main Streamlit app with all relevant code
-- `app.py` — compatibility shim that imports `streamlit_app.py`
-
-## Next likely upgrades
-
-- editable risk settings from the UI
-- compare two artifacts side-by-side
-- surface more of the gate logic in human language
-- export a lightweight HTML/PDF report
-- optional FastAPI backend if this grows beyond a local dashboard
+- This is now much more reliable for local use because the engine ships with the UI.
+- Some live-data functionality still depends on external connectivity and whatever market data sources the scripts call.
+- Generated artifacts are intentionally not vendored from the old repo; they are recreated in this repo as you use the app.

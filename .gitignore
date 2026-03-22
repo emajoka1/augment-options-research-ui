@@ -4,3 +4,5 @@ __pycache__/
 .next/
 node_modules/
 .DS_Store
+vendor_core/snapshots/
+vendor_core/kb/experiments/

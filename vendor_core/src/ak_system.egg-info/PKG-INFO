@@ -1,0 +1,7 @@
+Metadata-Version: 2.4
+Name: ak_system
+Version: 0.1.0
+Summary: Autonomous knowledge + options framework
+Requires-Python: >=3.9
+Requires-Dist: numpy==2.0.2
+Requires-Dist: scipy==1.15.3
