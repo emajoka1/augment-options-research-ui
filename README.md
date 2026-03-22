@@ -40,6 +40,8 @@ streamlit run app.py
 export AUGMENT_CORE_PATH=/absolute/path/to/augment-options-research-v2/project
 ```
 
+If you do not set it, the app now tries several common locations automatically and also lets you override the path directly in the sidebar.
+
 ## Current features
 
 - Run `scripts/mc_command.py --json`

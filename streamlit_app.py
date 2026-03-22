@@ -4,7 +4,6 @@ import json
 import os
 import subprocess
 import sys
-from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
@@ -14,14 +13,7 @@ import streamlit as st
 st.set_page_config(page_title="Augment Options Research UI", layout="wide")
 
 ROOT = Path(__file__).resolve().parent
-DEFAULT_CORE = (ROOT.parent / "augment-options-research-v2" / "project").resolve()
-CORE_PATH = Path(os.environ.get("AUGMENT_CORE_PATH", str(DEFAULT_CORE))).expanduser().resolve()
-MC_SCRIPT = CORE_PATH / "scripts" / "mc_command.py"
-VENV_PY = CORE_PATH / ".venv" / "bin" / "python"
-RUN_LOG = CORE_PATH / "snapshots" / "mc_runs.jsonl"
-EXPERIMENTS_DIR = CORE_PATH / "kb" / "experiments"
-STATE_FILE = CORE_PATH / "snapshots" / "mc_last_state.json"
-
+CORE_ENV_VAR = "AUGMENT_CORE_PATH"
 
 SAMPLE_PAYLOAD: dict[str, Any] = {
     "timestamp": "2026-03-22T18:21:45.814471+00:00",
@@ -63,29 +55,87 @@ SAMPLE_PAYLOAD: dict[str, Any] = {
 }
 
 
-def python_bin() -> str:
-    if VENV_PY.exists():
-        return str(VENV_PY)
+def candidate_core_paths() -> list[Path]:
+    candidates: list[Path] = []
+    raw_env = os.environ.get(CORE_ENV_VAR)
+    if raw_env:
+        candidates.append(Path(raw_env).expanduser())
+
+    session_raw = st.session_state.get("core_path_input", "")
+    if session_raw:
+        candidates.append(Path(session_raw).expanduser())
+
+    candidates.extend(
+        [
+            ROOT.parent / "augment-options-research-v2" / "project",
+            ROOT / "augment-options-research-v2" / "project",
+            Path.cwd() / "augment-options-research-v2" / "project",
+            Path.cwd().parent / "augment-options-research-v2" / "project",
+            Path("/Users/forge/.openclaw/workspace/augment-options-research-v2/project"),
+        ]
+    )
+
+    seen: set[str] = set()
+    unique: list[Path] = []
+    for path in candidates:
+        try:
+            resolved = path.expanduser().resolve()
+        except Exception:
+            resolved = path.expanduser()
+        key = str(resolved)
+        if key not in seen:
+            seen.add(key)
+            unique.append(resolved)
+    return unique
+
+
+def resolve_core_path() -> tuple[Path, bool, str, list[Path]]:
+    checked = candidate_core_paths()
+    for path in checked:
+        if (path / "scripts" / "mc_command.py").exists():
+            return path, True, "OK", checked
+    first = checked[0] if checked else (ROOT.parent / "augment-options-research-v2" / "project")
+    return first, False, f"Could not find core repo. Checked {len(checked)} candidate path(s).", checked
+
+
+def core_files(core_path: Path) -> dict[str, Path]:
+    return {
+        "mc_script": core_path / "scripts" / "mc_command.py",
+        "venv_py": core_path / ".venv" / "bin" / "python",
+        "run_log": core_path / "snapshots" / "mc_runs.jsonl",
+        "experiments_dir": core_path / "kb" / "experiments",
+        "state_file": core_path / "snapshots" / "mc_last_state.json",
+    }
+
+
+def python_bin(core_path: Path) -> str:
+    files = core_files(core_path)
+    if files["venv_py"].exists():
+        return str(files["venv_py"])
     return sys.executable
 
 
-def core_ready() -> tuple[bool, str]:
-    if not CORE_PATH.exists():
-        return False, f"Core path not found: {CORE_PATH}"
-    if not MC_SCRIPT.exists():
-        return False, f"Missing script: {MC_SCRIPT}"
-    return True, "OK"
+def maybe_load_json(path: Path) -> dict[str, Any] | None:
+    try:
+        return json.loads(path.read_text())
+    except Exception:
+        return None
 
 
 def run_mc_command(
+    core_path: Path,
     skip_live: bool,
     max_attempts: int,
     retry_delay_sec: int,
     freshness_sla_seconds: int,
     env_overrides: dict[str, Any] | None = None,
 ) -> tuple[dict[str, Any] | None, str, int]:
+    files = core_files(core_path)
+    if not files["mc_script"].exists():
+        return None, f"Missing script: {files['mc_script']}", 1
+
     cmd = [
-        python_bin(),
+        python_bin(core_path),
         "scripts/mc_command.py",
         "--json",
         "--max-attempts",
@@ -99,12 +149,13 @@ def run_mc_command(
         cmd.append("--skip-live")
 
     env = os.environ.copy()
+    env[CORE_ENV_VAR] = str(core_path)
     for key, value in (env_overrides or {}).items():
         if value is None or value == "":
             continue
         env[str(key)] = str(value)
 
-    proc = subprocess.run(cmd, cwd=CORE_PATH, capture_output=True, text=True, env=env)
+    proc = subprocess.run(cmd, cwd=core_path, capture_output=True, text=True, env=env)
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
 
@@ -119,18 +170,11 @@ def run_mc_command(
     return payload, logs, proc.returncode
 
 
-def maybe_load_json(path: Path) -> dict[str, Any] | None:
-    try:
-        return json.loads(path.read_text())
-    except Exception:
-        return None
-
-
-def load_runs(limit: int = 200) -> list[dict[str, Any]]:
-    if not RUN_LOG.exists():
+def load_runs(run_log: Path, limit: int = 200) -> list[dict[str, Any]]:
+    if not run_log.exists():
         return []
     rows: list[dict[str, Any]] = []
-    for line in RUN_LOG.read_text(errors="ignore").splitlines()[-limit:]:
+    for line in run_log.read_text(errors="ignore").splitlines()[-limit:]:
         line = line.strip()
         if not line:
             continue
@@ -141,24 +185,15 @@ def load_runs(limit: int = 200) -> list[dict[str, Any]]:
     return rows
 
 
-def load_experiment_artifacts(limit: int = 100) -> list[tuple[Path, dict[str, Any]]]:
-    if not EXPERIMENTS_DIR.exists():
+def load_experiment_artifacts(experiments_dir: Path, limit: int = 100) -> list[tuple[Path, dict[str, Any]]]:
+    if not experiments_dir.exists():
         return []
     out: list[tuple[Path, dict[str, Any]]] = []
-    for path in sorted(EXPERIMENTS_DIR.glob("options-mc-*.json"), reverse=True)[:limit]:
+    for path in sorted(experiments_dir.glob("options-mc-*.json"), reverse=True)[:limit]:
         payload = maybe_load_json(path)
         if payload is not None:
             out.append((path, payload))
     return out
-
-
-def iso_to_dt(value: Any) -> datetime | None:
-    if not isinstance(value, str) or not value:
-        return None
-    try:
-        return datetime.fromisoformat(value.replace("Z", "+00:00")).astimezone(timezone.utc)
-    except Exception:
-        return None
 
 
 def metric_value(label: str, value: Any) -> None:
@@ -308,16 +343,70 @@ def render_payload(payload: dict[str, Any], logs: str, code: int | None) -> None
         st.text(logs or "No logs captured.")
 
 
+def render_history(core_path: Path) -> None:
+    files = core_files(core_path)
+    st.subheader("Run history")
+    runs = load_runs(files["run_log"], limit=200)
+    runs_df = summarize_runs(runs)
+    if runs_df.empty:
+        st.info("No mc_runs.jsonl history found yet.")
+    else:
+        history_cols = st.columns(4)
+        with history_cols[0]:
+            metric_value("Logged runs", len(runs_df))
+        with history_cols[1]:
+            metric_value("Latest spot", runs_df.iloc[-1].get("spot"))
+        with history_cols[2]:
+            metric_value("Latest action", runs_df.iloc[-1].get("action_state"))
+        with history_cols[3]:
+            metric_value("Latest decision", runs_df.iloc[-1].get("final_decision"))
+
+        chart_df = runs_df.set_index("timestamp").sort_index()
+        numeric_cols = [c for c in ["ev_mean_R", "ev_stress_mean_R", "pl_p5_R", "cvar_worst_R", "spot"] if c in chart_df.columns]
+        if numeric_cols:
+            st.line_chart(chart_df[numeric_cols], height=260)
+
+        st.dataframe(runs_df.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
+
+    st.subheader("Options MC artifacts")
+    artifacts = load_experiment_artifacts(files["experiments_dir"], limit=100)
+    artifacts_df = artifacts_dataframe(artifacts)
+    if artifacts_df.empty:
+        st.info("No options-mc artifacts found yet.")
+        return
+
+    a1, a2, a3 = st.columns(3)
+    with a1:
+        metric_value("Artifacts", len(artifacts_df))
+    with a2:
+        metric_value("Latest model", artifacts_df.iloc[0].get("model"))
+    with a3:
+        metric_value("Latest strategy", artifacts_df.iloc[0].get("strategy"))
+
+    chart_cols = [c for c in ["ev", "pop", "cvar95"] if c in artifacts_df.columns]
+    if chart_cols:
+        plot_df = artifacts_df.sort_values("generated_at").set_index("generated_at")
+        st.line_chart(plot_df[chart_cols], height=240)
+
+    selected_name = st.selectbox("Inspect artifact", options=artifacts_df["file"].tolist())
+    selected_payload = next((payload for path, payload in artifacts if path.name == selected_name), None)
+
+    st.dataframe(artifacts_df, use_container_width=True, hide_index=True)
+    if selected_payload is not None:
+        st.json(selected_payload)
+
+
 st.title("Augment Options Research UI")
 st.caption("Research dashboard for the existing Monte Carlo, brief, and artifact workflow.")
 
-ready, reason = core_ready()
-if not ready:
-    st.error(reason)
-    st.stop()
+if "core_path_input" not in st.session_state:
+    st.session_state.core_path_input = os.environ.get(CORE_ENV_VAR, "")
+
+core_path, core_ok, core_reason, checked_paths = resolve_core_path()
+files = core_files(core_path)
 
 if "last_payload" not in st.session_state:
-    st.session_state.last_payload = maybe_load_json(STATE_FILE) or SAMPLE_PAYLOAD
+    st.session_state.last_payload = maybe_load_json(files["state_file"]) or SAMPLE_PAYLOAD
 if "last_logs" not in st.session_state:
     st.session_state.last_logs = ""
 if "last_code" not in st.session_state:
@@ -325,8 +414,16 @@ if "last_code" not in st.session_state:
 
 with st.sidebar:
     st.subheader("Core repo")
-    st.code(str(CORE_PATH))
-    st.caption(f"Python: {python_bin()}")
+    st.text_input("Core repo path", key="core_path_input", placeholder="/path/to/augment-options-research-v2/project")
+    st.code(str(core_path))
+    st.caption(f"Python: {python_bin(core_path)}")
+    if core_ok:
+        st.success("Core repo detected")
+    else:
+        st.warning(core_reason)
+    with st.expander("Checked paths"):
+        for path in checked_paths:
+            st.text(str(path))
     st.divider()
 
     st.subheader("Run settings")
@@ -352,13 +449,13 @@ with st.sidebar:
         "SPY_MAX_SPREAD_PCT": max_spread_pct,
     }
 
-    run_now = st.button("Run workflow", type="primary", use_container_width=True)
-    load_state = st.button("Load last saved state", use_container_width=True)
+    run_now = st.button("Run workflow", type="primary", use_container_width=True, disabled=not core_ok)
+    load_state = st.button("Load last saved state", use_container_width=True, disabled=not files["state_file"].exists())
     load_sample = st.button("Load sample payload", use_container_width=True)
 
 if load_state:
-    st.session_state.last_payload = maybe_load_json(STATE_FILE) or SAMPLE_PAYLOAD
-    st.session_state.last_logs = "Loaded from snapshots/mc_last_state.json"
+    st.session_state.last_payload = maybe_load_json(files["state_file"]) or SAMPLE_PAYLOAD
+    st.session_state.last_logs = f"Loaded from {files['state_file']}"
     st.session_state.last_code = 0
 
 if load_sample:
@@ -369,6 +466,7 @@ if load_sample:
 if run_now:
     with st.spinner("Running mc_command.py …"):
         payload, logs, code = run_mc_command(
+            core_path,
             skip_live,
             int(max_attempts),
             int(retry_delay_sec),
@@ -376,14 +474,20 @@ if run_now:
             env_overrides=env_overrides,
         )
         if payload is None:
-            st.session_state.last_payload = SAMPLE_PAYLOAD
+            st.session_state.last_payload = st.session_state.get("last_payload") or SAMPLE_PAYLOAD
             st.session_state.last_logs = logs
             st.session_state.last_code = code
-            st.error("Command did not return parseable JSON. Showing sample payload until the run issue is fixed.")
+            st.error("Command did not return parseable JSON. Keeping the last payload and showing the run logs.")
         else:
             st.session_state.last_payload = payload
             st.session_state.last_logs = logs
             st.session_state.last_code = code
+
+if not core_ok:
+    st.warning(
+        "The core repo was not auto-detected, so live workflow execution is disabled for now. "
+        "You can still inspect the sample payload, and you can fix this by entering the correct core path in the sidebar."
+    )
 
 payload = st.session_state.last_payload
 logs = st.session_state.last_logs
@@ -391,51 +495,8 @@ code = st.session_state.last_code
 
 render_payload(payload, logs, code)
 
-st.subheader("Run history")
-runs = load_runs(limit=200)
-runs_df = summarize_runs(runs)
-if runs_df.empty:
-    st.info("No mc_runs.jsonl history found yet.")
+if core_ok:
+    render_history(core_path)
 else:
-    history_cols = st.columns(4)
-    with history_cols[0]:
-        metric_value("Logged runs", len(runs_df))
-    with history_cols[1]:
-        metric_value("Latest spot", runs_df.iloc[-1].get("spot"))
-    with history_cols[2]:
-        metric_value("Latest action", runs_df.iloc[-1].get("action_state"))
-    with history_cols[3]:
-        metric_value("Latest decision", runs_df.iloc[-1].get("final_decision"))
-
-    chart_df = runs_df.set_index("timestamp").sort_index()
-    numeric_cols = [c for c in ["ev_mean_R", "ev_stress_mean_R", "pl_p5_R", "cvar_worst_R", "spot"] if c in chart_df.columns]
-    if numeric_cols:
-        st.line_chart(chart_df[numeric_cols], height=260)
-
-    st.dataframe(runs_df.sort_values("timestamp", ascending=False), use_container_width=True, hide_index=True)
-
-st.subheader("Options MC artifacts")
-artifacts = load_experiment_artifacts(limit=100)
-artifacts_df = artifacts_dataframe(artifacts)
-if artifacts_df.empty:
-    st.info("No options-mc artifacts found yet.")
-else:
-    a1, a2, a3 = st.columns(3)
-    with a1:
-        metric_value("Artifacts", len(artifacts_df))
-    with a2:
-        metric_value("Latest model", artifacts_df.iloc[0].get("model"))
-    with a3:
-        metric_value("Latest strategy", artifacts_df.iloc[0].get("strategy"))
-
-    chart_cols = [c for c in ["ev", "pop", "cvar95"] if c in artifacts_df.columns]
-    if chart_cols:
-        plot_df = artifacts_df.sort_values("generated_at").set_index("generated_at")
-        st.line_chart(plot_df[chart_cols], height=240)
-
-    selected_name = st.selectbox("Inspect artifact", options=artifacts_df["file"].tolist())
-    selected_payload = next((payload for path, payload in artifacts if path.name == selected_name), None)
-
-    st.dataframe(artifacts_df, use_container_width=True, hide_index=True)
-    if selected_payload is not None:
-        st.json(selected_payload)
+    st.subheader("History / artifacts")
+    st.info("History and artifact browsing will appear automatically once the core repo path is valid.")
