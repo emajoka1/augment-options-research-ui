@@ -43,6 +43,8 @@ streamlit run app.py
 ## Current features
 
 - Run bundled `mc_command.py --json`
+- Run a one-click smoke test from the UI
+- View a self-check table for required bundled files
 - Toggle `--skip-live`
 - Adjust attempts / retry delay / freshness SLA
 - Override key risk/feed env settings from the sidebar
@@ -55,6 +57,7 @@ streamlit run app.py
 - Load the latest saved state or a sample payload
 - View summary metrics and trade-readiness gates
 - Inspect failures, candidates, provenance, and raw JSON
+- Show a friendlier workflow diagnostic when a run fails
 - Browse `vendor_core/snapshots/mc_runs.jsonl` history
 - Chart recent EV / CVaR / spot metrics
 - Browse `vendor_core/kb/experiments/options-mc-*.json` artifacts

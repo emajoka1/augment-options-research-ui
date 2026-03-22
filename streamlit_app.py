@@ -81,6 +81,52 @@ def maybe_load_json(path: Path) -> dict[str, Any] | None:
         return None
 
 
+def parse_failure_reason(logs: str, code: int | None) -> str | None:
+    text = (logs or "").strip()
+    if not text and not code:
+        return None
+    if "Invalid options-mc provenance" in text:
+        return "The Monte Carlo artifact failed provenance validation. The bundled engine ran, but one internal output contract did not validate cleanly."
+    if "Untraceable run: missing snapshot_id" in text:
+        return "The workflow did not generate a traceable live snapshot ID. This usually means the live snapshot step was skipped or failed too early."
+    if "Command failed:" in text:
+        return "One of the bundled workflow scripts failed while running. See the logs tab for the exact command and traceback."
+    if code not in (None, 0):
+        return f"Workflow exited with code {code}. See logs for details."
+    return None
+
+
+def run_smoke_test() -> tuple[bool, str]:
+    cmd = [python_bin(), "scripts/mc_command.py", "--json", "--max-attempts", "1", "--retry-delay-sec", "0"]
+    proc = subprocess.run(cmd, cwd=CORE_PATH, capture_output=True, text=True, env=os.environ.copy())
+    logs = "\n\n".join(part for part in [(proc.stdout or "").strip(), (proc.stderr or "").strip()] if part)
+    if proc.stdout:
+        try:
+            json.loads(proc.stdout)
+            return True, logs
+        except json.JSONDecodeError:
+            pass
+    return False, logs
+
+
+def self_check_rows() -> list[dict[str, Any]]:
+    checks = []
+    files = {
+        "Bundled core dir": CORE_PATH,
+        "Workflow script": MC_SCRIPT,
+        "Python venv": VENV_PY,
+        "Fallback snapshot": CORE_PATH / "snapshots" / "spy_mc_snapshot_20260224.json",
+        "Core package": CORE_PATH / "src" / "ak_system",
+    }
+    for label, path in files.items():
+        checks.append({
+            "check": label,
+            "path": str(path),
+            "status": "ok" if path.exists() else "missing",
+        })
+    return checks
+
+
 def run_mc_command(
     skip_live: bool,
     max_attempts: int,
@@ -313,6 +359,12 @@ if "last_logs" not in st.session_state:
     st.session_state.last_logs = ""
 if "last_code" not in st.session_state:
     st.session_state.last_code = None
+if "last_failure_reason" not in st.session_state:
+    st.session_state.last_failure_reason = None
+if "smoke_test_logs" not in st.session_state:
+    st.session_state.smoke_test_logs = ""
+if "smoke_test_ok" not in st.session_state:
+    st.session_state.smoke_test_ok = None
 
 with st.sidebar:
     st.subheader("Bundled core")
@@ -345,6 +397,7 @@ with st.sidebar:
     }
 
     run_now = st.button("Run workflow", type="primary", use_container_width=True)
+    smoke_test = st.button("Run smoke test", use_container_width=True)
     load_state = st.button("Load last saved state", use_container_width=True, disabled=not STATE_FILE.exists())
     load_sample = st.button("Load sample payload", use_container_width=True)
 
@@ -352,11 +405,19 @@ if load_state:
     st.session_state.last_payload = maybe_load_json(STATE_FILE) or SAMPLE_PAYLOAD
     st.session_state.last_logs = f"Loaded from {STATE_FILE}"
     st.session_state.last_code = 0
+    st.session_state.last_failure_reason = None
 
 if load_sample:
     st.session_state.last_payload = SAMPLE_PAYLOAD
     st.session_state.last_logs = "Loaded sample payload"
     st.session_state.last_code = 0
+    st.session_state.last_failure_reason = None
+
+if smoke_test:
+    with st.spinner("Running bundled smoke test …"):
+        ok, smoke_logs = run_smoke_test()
+        st.session_state.smoke_test_ok = ok
+        st.session_state.smoke_test_logs = smoke_logs
 
 if run_now:
     with st.spinner("Running bundled mc_command.py …"):
@@ -371,15 +432,35 @@ if run_now:
             st.session_state.last_payload = st.session_state.get("last_payload") or SAMPLE_PAYLOAD
             st.session_state.last_logs = logs
             st.session_state.last_code = code
+            st.session_state.last_failure_reason = parse_failure_reason(logs, code)
             st.error("Command did not return parseable JSON. Keeping the last payload and showing the run logs.")
         else:
             st.session_state.last_payload = payload
             st.session_state.last_logs = logs
             st.session_state.last_code = code
+            st.session_state.last_failure_reason = None
 
 payload = st.session_state.last_payload
 logs = st.session_state.last_logs
 code = st.session_state.last_code
+failure_reason = st.session_state.last_failure_reason
+
+if failure_reason:
+    st.warning(f"Workflow diagnostic: {failure_reason}")
+
+checks_df = pd.DataFrame(self_check_rows())
+st.subheader("Self-check")
+check_cols = st.columns(3)
+with check_cols[0]:
+    metric_value("Checks", len(checks_df))
+with check_cols[1]:
+    metric_value("Missing", int((checks_df['status'] != 'ok').sum()))
+with check_cols[2]:
+    metric_value("Smoke test", "pass" if st.session_state.smoke_test_ok is True else ("fail" if st.session_state.smoke_test_ok is False else "not run"))
+st.dataframe(checks_df, use_container_width=True, hide_index=True)
+if st.session_state.smoke_test_logs:
+    with st.expander("Smoke test logs"):
+        st.text(st.session_state.smoke_test_logs)
 
 render_payload(payload, logs, code)
 
