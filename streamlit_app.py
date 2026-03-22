@@ -77,7 +77,13 @@ def core_ready() -> tuple[bool, str]:
     return True, "OK"
 
 
-def run_mc_command(skip_live: bool, max_attempts: int, retry_delay_sec: int, freshness_sla_seconds: int) -> tuple[dict[str, Any] | None, str, int]:
+def run_mc_command(
+    skip_live: bool,
+    max_attempts: int,
+    retry_delay_sec: int,
+    freshness_sla_seconds: int,
+    env_overrides: dict[str, Any] | None = None,
+) -> tuple[dict[str, Any] | None, str, int]:
     cmd = [
         python_bin(),
         "scripts/mc_command.py",
@@ -92,7 +98,13 @@ def run_mc_command(skip_live: bool, max_attempts: int, retry_delay_sec: int, fre
     if skip_live:
         cmd.append("--skip-live")
 
-    proc = subprocess.run(cmd, cwd=CORE_PATH, capture_output=True, text=True)
+    env = os.environ.copy()
+    for key, value in (env_overrides or {}).items():
+        if value is None or value == "":
+            continue
+        env[str(key)] = str(value)
+
+    proc = subprocess.run(cmd, cwd=CORE_PATH, capture_output=True, text=True, env=env)
     stdout = (proc.stdout or "").strip()
     stderr = (proc.stderr or "").strip()
 
@@ -322,6 +334,24 @@ with st.sidebar:
     max_attempts = st.number_input("Max attempts", min_value=1, max_value=10, value=2, step=1)
     retry_delay_sec = st.number_input("Retry delay (sec)", min_value=0, max_value=3600, value=1, step=1)
     freshness_sla_seconds = st.number_input("Freshness SLA (sec)", min_value=60, max_value=86400, value=7200, step=60)
+
+    st.subheader("Risk / feed overrides")
+    max_risk_dollars = st.number_input("SPY_MAX_RISK_DOLLARS", min_value=1.0, max_value=10000.0, value=250.0, step=25.0)
+    account_size = st.number_input("SPY_ACCOUNT_SIZE", min_value=100.0, max_value=10000000.0, value=10000.0, step=500.0)
+    risk_pct = st.number_input("SPY_RISK_PCT", min_value=0.001, max_value=1.0, value=0.025, step=0.005, format="%.3f")
+    min_oi = st.number_input("SPY_MIN_OI", min_value=0, max_value=1000000, value=1000, step=100)
+    min_vol = st.number_input("SPY_MIN_VOL", min_value=0, max_value=1000000, value=100, step=50)
+    max_spread_pct = st.number_input("SPY_MAX_SPREAD_PCT", min_value=0.0, max_value=1.0, value=0.10, step=0.01, format="%.2f")
+
+    env_overrides = {
+        "SPY_MAX_RISK_DOLLARS": max_risk_dollars,
+        "SPY_ACCOUNT_SIZE": account_size,
+        "SPY_RISK_PCT": risk_pct,
+        "SPY_MIN_OI": min_oi,
+        "SPY_MIN_VOL": min_vol,
+        "SPY_MAX_SPREAD_PCT": max_spread_pct,
+    }
+
     run_now = st.button("Run workflow", type="primary", use_container_width=True)
     load_state = st.button("Load last saved state", use_container_width=True)
     load_sample = st.button("Load sample payload", use_container_width=True)
@@ -338,7 +368,13 @@ if load_sample:
 
 if run_now:
     with st.spinner("Running mc_command.py …"):
-        payload, logs, code = run_mc_command(skip_live, int(max_attempts), int(retry_delay_sec), int(freshness_sla_seconds))
+        payload, logs, code = run_mc_command(
+            skip_live,
+            int(max_attempts),
+            int(retry_delay_sec),
+            int(freshness_sla_seconds),
+            env_overrides=env_overrides,
+        )
         if payload is None:
             st.session_state.last_payload = SAMPLE_PAYLOAD
             st.session_state.last_logs = logs

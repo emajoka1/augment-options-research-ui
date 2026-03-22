@@ -45,6 +45,13 @@ export AUGMENT_CORE_PATH=/absolute/path/to/augment-options-research-v2/project
 - Run `scripts/mc_command.py --json`
 - Toggle `--skip-live`
 - Adjust attempts / retry delay / freshness SLA
+- Override key risk/feed env settings from the sidebar
+  - `SPY_MAX_RISK_DOLLARS`
+  - `SPY_ACCOUNT_SIZE`
+  - `SPY_RISK_PCT`
+  - `SPY_MIN_OI`
+  - `SPY_MIN_VOL`
+  - `SPY_MAX_SPREAD_PCT`
 - Load the latest saved state or a sample payload
 - View summary metrics and trade-readiness gates
 - Inspect failures, candidates, provenance, and raw JSON
